@@ -1,0 +1,380 @@
+///$tab Main
+SET ThousandSep=',';
+SET DecimalSep='.';
+SET MoneyThousandSep=',';
+SET MoneyDecimalSep='.';
+SET MoneyFormat='$ ###0.00;-$ ###0.00';
+SET TimeFormat='h:mm:ss TT';
+SET DateFormat='M/D/YYYY';
+SET TimestampFormat='M/D/YYYY h:mm:ss[.fff] TT';
+SET FirstWeekDay=6;
+SET BrokenWeeks=1;
+SET ReferenceDay=0;
+SET FirstMonthOfYear=1;
+SET CollationLocale='en-US';
+SET CreateSearchIndexOnReload=1;
+SET MonthNames='Jan;Feb;Mar;Apr;May;Jun;Jul;Aug;Sep;Oct;Nov;Dec';
+SET LongMonthNames='January;February;March;April;May;June;July;August;September;October;November;December';
+SET DayNames='Mon;Tue;Wed;Thu;Fri;Sat;Sun';
+SET LongDayNames='Monday;Tuesday;Wednesday;Thursday;Friday;Saturday;Sunday';
+SET NumericalAbbreviation='3:k;6:M;9:G;12:T;15:P;18:E;21:Z;24:Y;-3:m;-6:μ;-9:n;-12:p;-15:f;-18:a;-21:z;-24:y';
+
+
+///$tab Sales Patient Tracker Excel
+[Sales Patient Tracker]:
+LOAD
+    "LONGITUDINAL PATIENT ID",
+    "CUSTOMER STATUS",
+    "CUSTOMER SUBSTATUS",
+    "TRANSACTION TYPE",
+    Date("REFERRAL DATE",'M-DD-YYYY') as "REFERRAL DATE",
+    "HCP NPI",
+    "HCP FIRST NAME",
+    "HCP LAST NAME",
+    "HCP STATE",
+    "HCP ZIP",
+    Date("LAST STATUS DATE",'M-DD-YYYY') as "LAST STATUS DATE",
+    "HCP TARGET",
+    REGION,
+    TERRITORY,
+    "TERRITORY NUMBER",
+    "IC EXCLUDED PATIENTS",
+    "C5 PRIOR THERAPY",
+    "PRIMARY PARENT",
+    "LVL 2 HCO",
+    "LVL 3 HCO"
+FROM [lib://DataFiles/Sales Patient Tracker Table.xlsx]
+(ooxml, embedded labels, table is Sheet1);
+
+exit script;
+///$tab Emails
+Emails:
+Load * Inline [
+Email
+oppilaale@gain-insights.com
+dineshrajr@gain-insights.com
+];
+
+Store Emails into  [lib://OneDrive - Oppilaale@gain-insights.com/Automation Test/Emails.qvd] (qvd);
+
+
+exit script;
+
+///$tab Section 2
+MAIN_TABLE:
+LOAD
+    "Date",
+    "Customer ID",
+    Qty,
+    // The field below is not available in the excel file
+    Week,
+    WeekDay("Date") as WeekDay_Date
+FROM [lib://DataFiles/Consecutive Days.xlsx]
+(ooxml, embedded labels, table is Sheet1);
+
+ 
+TEMP_TABLE:
+Load "Customer ID", 
+"Date",
+"Customer ID"&"Date" as Cust_Date,
+Qty, 
+Num("Date") as Num_Date,
+If("Customer ID"=Peek("Customer ID"),
+Num(Peek("Date"))) as Peek_Date,
+WeekDay_Date
+Resident MAIN_TABLE
+Order By "Customer ID","Date" Desc;
+
+ 
+Left Join (TEMP_TABLE)
+
+Load 
+"Customer ID"&"Date" as Cust_Date, 
+"Customer ID" as CustID1, 
+"Date" as Date1,
+If("Customer ID"=Peek(CustID1),
+Num(Peek("Date1"))) as Peek_Date1, 
+WeekDay_Date as WeekDay_Date_Asc
+Resident MAIN_TABLE
+Order By "Customer ID","Date";
+
+Drop Fields CustID1,Date1;
+
+NoConcatenate
+
+Final_Table:
+Load *,
+If(((WeekDay_Date='Fri' and Peek(WeekDay_Date)='Mon' and 
+(Num_Date-Peek_Date=-3)) or (Num_Date-Peek_Date=-1)) or
+((WeekDay_Date_Asc='Mon' and 
+(Num_Date-Peek_Date1=3)) or (Num_Date-Peek_Date1=1)) ,1,0) as Date_Diff
+Resident TEMP_TABLE;
+
+ 
+
+Drop Table MAIN_TABLE,TEMP_TABLE;
+
+Drop Fields Num_Date,Cust_Date,Peek_Date,WeekDay_Date,Peek_Date1,WeekDay_Date_Asc;
+
+
+Exit Script;
+///$tab New Script
+Sheet1:
+LOAD
+    "Date" as Date,
+    "Customer ID" as CustomerID,
+    Qty as Qty
+FROM [lib://DataFiles/Consecutive Days.xlsx]
+(ooxml, embedded labels, table is Sheet1);
+
+
+TempTableAscending:
+LOAD
+	Date,
+	CustomerID,
+	Qty,
+    if((WeekDay(Date)='Sat' or WeekDay(Date)='Sun'),'NonConsecutive',
+	If(Peek('CustomerID') = CustomerID and Day(Date) - Day(Peek('Date')) = 1,'Consecutive',
+     if( Peek('CustomerID') = CustomerID  and (WeekDay(Date)='Mon' and Previous(WeekDay(Date))='Fri' and Date=Date(Previous(Date)+3))
+    , 'Consecutive'))) as ConsecutivePrevious
+Resident Sheet1
+Order By CustomerID, Date ASC;
+
+Left Join
+
+TempTableDescending:
+
+LOAD 
+	Date,
+    CustomerID,
+    Qty,
+    if((WeekDay(Date)='Sat' or WeekDay(Date)='Sun'),'NonConsecutive',
+    If(Peek('CustomerID') = CustomerID and Day(Peek('Date')) - Day(Date) = 1,'Consecutive', 
+      if( Peek('CustomerID') = CustomerID  and (WeekDay(Date)='Mon' and Previous(WeekDay(Date))='Fri' and Date=Date(Previous(Date)+3))
+    ,'Consecutive'))) as ConsecutiveNext
+Resident TempTableAscending
+Order By CustomerID, Date DESC;
+//Exit Script;
+
+FinalTable:
+
+LOAD 
+	Date,
+    CustomerID,
+    Qty,
+    If(IsNull(ConsecutivePrevious), If(IsNull(ConsecutiveNext), '0', '1'), '1') as ConsecutiveOrNot
+Resident TempTableAscending;
+
+NoConcatenate
+
+MyTable:
+load * //,
+//if((WeekDay("Date")='Sat' or WeekDay("Date")='Sun'),0,
+//if((WeekDay("Date")='Mon' and Previous(WeekDay("Date"))='Fri' and "Date"=Date(Previous("Date")+3)), '0','1')) as Result
+Resident FinalTable ;
+// where ConsecutiveOrNot='Consecutive';
+
+DROP Tables Sheet1,TempTableAscending,FinalTable;
+
+exit script;
+///$tab Consecutive Days
+Test_Temp:
+LOAD
+    "Date",
+    Num("Date") as NumDate,
+    "Customer ID",
+     Qty
+FROM [lib://DataFiles/Consecutive Days.xlsx]
+(ooxml, embedded labels, table is Sheet1);
+
+Test:
+LOAD *,
+if(rowno()=1 or "Customer ID" <> previous("Customer ID"),1,
+if((WeekDay("Date")='Sat' or WeekDay("Date")='Sun'),0,
+if(("Date"-previous("Date")=1 or 
+(WeekDay("Date")='Mon' and Previous(WeekDay("Date"))='Fri' and "Date"=Date(Previous("Date")+3))), 
+1, 0))) as Counter
+
+Resident Test_Temp 
+order by "Customer ID","Date";
+
+Drop table Test_Temp;
+
+NoConcatenate
+
+ConsecutiveDays:
+Load
+	*,
+    "Customer ID"&"Date" as %ConsecutiveDaysKey
+Resident    Test; 
+// where Counter<>0 ;
+
+Drop Table Test;
+
+inner join(ConsecutiveDays)
+
+Load * 
+where DateCount>1;
+Load
+"Customer ID",
+Count("Date") as DateCount
+Resident ConsecutiveDays
+Group by "Customer ID" order by "Customer ID";
+
+
+
+exit script;
+///$tab Test_1
+[InQty/Reorder]:
+Load * Inline [
+Product, Sales, Inqty, Reorder
+Dress, 2500000, 25000, 50500
+Shoes, 450000, 12000, 340400
+Electronics, 6700000, 870, 45000
+Furniture, 870000, 67080, 24300
+Food, 9700000, 87050, 89050
+];
+
+Load 
+	sum(Inqty) as Sum_InQty,
+    sum(Reorder) as Sum_Order
+    
+    Resident [InQty/Reorder]
+    Group by Product, Sales;
+
+Exit Script;
+///$tab Inline Load - KPI
+// Test:
+// Load * Inline [
+// Country, City, 2021_Population, 2020_Population, 2019_Population
+// UK, London, 4500000, 1000000, 1045000
+// UK, Liverpool, 5000000, 200000, 2435000
+// UK, Scotland, 6700000, 750000, 2400000
+// USA, NewYork, 3000000, 6550000, 560900
+// USA, NewJersy, 3550000, 1500000, 780000
+// USA, Florida, 4500000, 6500000, 6700000
+// USA, Ohio, 5500000, 1500000, 5656000
+// India, Chennai, 4250000, 255000, 5000000
+// India, Mumbai, 3200000, 2725000, 120000
+// India, Banglore, 1250000, 4575000, 100000
+// India, Kolkata, 8200000, 1750000, 1000000
+// ];
+
+// CrossTable(Year, Value, 2)
+// Test1:
+// Load * Resident Test;
+// Drop Table Test;
+
+
+
+// Exit Script;
+
+Load * Inline [
+
+Year, Country, City, Population, Mail
+
+2022, UK, Manchester, 7800, oppilaale@gain-insights.com
+2021, UK, London, 4500, oppilaale@gain-insights.com
+2020, UK, Liverpool, 2000, oppilaale@gain-insights.com
+2019, UK, Scotland, 6700, oppilaale@gain-insights.com
+
+2022, USA, Chicago, 3300, oppilaale@gain-insights.com
+2021, USA, NewYork, 3550, oppilaale@gain-insights.com
+2020, USA, NewJersy, 3000, oppilaale@gain-insights.com
+2019, USA, Florida, 4550, oppilaale@gain-insights.com
+2018, USA, Ohio, 5500, oppilaale@gain-insights.com
+
+2022, India, Delhi, 6545, oppilaale@gain-insights.com
+2021, India, Chennai, 4350, oppilaale@gain-insights.com
+2020, India, Mumbai, 3200, oppilaale@gain-insights.com
+2019, India, Banglore, 1250, oppilaale@gain-insights.com
+2018, India, Kolkata, 8200, oppilaale@gain-insights.com
+];
+
+Load *Inline [
+Dimension
+Country
+City
+];
+
+Load * Inline [
+Measure
+Population
+];
+
+Load * Inline [
+Dimension1, Dimension2, Dimension3, Dimension4, Dimension5, Dimension6, Dimension7, Dimension8, Dimension9, Dimension10
+1, 2, 3, 4, 5, 6, 7, 8, 9, 10
+2
+3
+4
+5
+6
+7
+8
+9
+10
+];
+
+Load * Inline [
+Currency
+INR
+USD
+USD
+GBP
+GBP
+GBP
+INR
+USD
+INR
+];
+
+Load * Inline [
+CCs
+oppilaale@gain-insights.com
+keerthanab@gain-insights.com
+];
+
+// Exit Script;
+///$tab Section
+Test_Temp:
+LOAD
+    "Date",
+    "Customer ID",
+     Qty
+FROM [lib://DataFiles/Consecutive Days.xlsx]
+(ooxml, embedded labels, table is Sheet1);
+
+Test:
+LOAD *,
+if(rowno()=1 or "Customer ID" <> previous("Customer ID"),1,
+if(("Date"-previous("Date")=1 or 
+(WeekDay("Date")='Mon' and Previous(WeekDay("Date"))='Fri' and "Date"=Date(Previous("Date")+3))), 
+peek('Counter')+1, 0)) as Counter
+
+Resident Test_Temp order by "Customer ID","Date";
+
+Drop table Test_Temp;
+
+NoConcatenate
+
+ConsecutiveDays:
+Load
+	*,
+    "Customer ID"&"Date" as %ConsecutiveDaysKey
+Resident    Test ;
+//where Counter<>0 ;
+
+Drop Table Test;
+
+inner join(ConsecutiveDays)
+
+Load * 
+where DateCount>1;
+Load
+"Customer ID",
+Count("Date") as DateCount
+Resident ConsecutiveDays
+Group by "Customer ID" order by "Customer ID";
+
+exit script;
